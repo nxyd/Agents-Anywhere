@@ -3,34 +3,55 @@ name: build-server-image
 # Builds the self-hosted `server` image (docker/Dockerfile --target server) on a
 # GitHub-hosted runner and publishes it as a release asset, so memory-constrained
 # hosts only have to `docker load` instead of compiling.
+#
+# The image is built from the UPSTREAM repository, not from this fork, so the
+# fork never needs branch/tag syncing: leave `ref` empty to build whatever
+# upstream currently publishes as its latest release.
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Git ref (tag/branch/sha) to build
-        required: true
-        default: v2.2.0
+        description: Upstream tag/branch/sha to build (empty = latest upstream release)
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
 concurrency:
-  group: build-server-image-${{ inputs.ref }}
+  group: build-server-image
   cancel-in-progress: false
+
+env:
+  UPSTREAM: anywhere-labs/Agents-Anywhere
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - name: Checkout
+      - name: Resolve upstream ref
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REF="${{ inputs.ref }}"
+          if [ -z "$REF" ]; then
+            REF=$(gh api "repos/${UPSTREAM}/releases/latest" --jq .tag_name)
+            echo "no ref given, using latest upstream release"
+          fi
+          echo "resolved ref: $REF"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout upstream
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          repository: anywhere-labs/Agents-Anywhere
+          ref: ${{ steps.resolve.outputs.ref }}
 
       - name: Show source revision
         run: |
-          echo "building ${{ inputs.ref }} at $(git rev-parse HEAD)"
+          echo "building ${{ steps.resolve.outputs.ref }} at $(git rev-parse HEAD)"
           docker version --format 'docker server {{.Server.Version}}'
           df -h /
 
@@ -45,7 +66,8 @@ jobs:
       - name: Verify image
         run: |
           docker images agents-anywhere-server --format '{{.ID}} {{.Tag}} {{.Size}}'
-          docker run --rm --entrypoint sh agents-anywhere-server:postgres -c 'cat /app/server/pyproject.toml | head -5'
+          docker run --rm --entrypoint sh agents-anywhere-server:postgres \
+            -c 'grep -m1 "^version" /app/server/pyproject.toml'
 
       - name: Package image
         run: |
@@ -57,9 +79,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="image-$(echo '${{ inputs.ref }}' | tr '/' '-')"
+          REF="${{ steps.resolve.outputs.ref }}"
+          TAG="image-$(echo "$REF" | tr '/' '-')"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "server image ${{ inputs.ref }}" \
-              --notes "Self-hosted server image built from ${{ inputs.ref }} at $(git rev-parse HEAD)."
+            gh release create "$TAG" --title "server image ${REF}" \
+              --notes "Self-hosted server image built from ${UPSTREAM}@${REF} ($(git rev-parse HEAD))."
           fi
           gh release upload "$TAG" agents-anywhere-server.tar.zst --clobber
+          echo "published https://github.com/${{ github.repository }}/releases/tag/${TAG}"
