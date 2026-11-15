@@ -80,10 +80,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           REF="${{ steps.resolve.outputs.ref }}"
-          TAG="image-$(echo "$REF" | tr '/' '-')"
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "server image ${REF}" \
+          TAG="image-$(echo "$REF" | tr '/' '-' )"
+          # --repo is required: the checkout above sets origin to UPSTREAM, so
+          # without it gh would try to create the release in the upstream repo.
+          FORK="${{ github.repository }}"
+          if ! gh release view "$TAG" --repo "$FORK" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$FORK" --title "server image ${REF}" \
               --notes "Self-hosted server image built from ${UPSTREAM}@${REF} ($(git rev-parse HEAD))."
           fi
-          gh release upload "$TAG" agents-anywhere-server.tar.zst --clobber
-          echo "published https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+          gh release upload "$TAG" --repo "$FORK" agents-anywhere-server.tar.zst --clobber
+          echo "published https://github.com/${FORK}/releases/tag/${TAG}"
